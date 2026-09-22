@@ -1,0 +1,537 @@
+{
+  "info": {
+    "_postman_id": "b7e1a2f0-4c3d-4e9a-9c1a-pagination-demo-0001",
+    "name": "Spring Boot 3.x Pagination Mastery Demo",
+    "description": "Collection covering all five pagination strategies: Page<T> (offset+count), Slice<T> (offset, no count), Window<T> (keyset/cursor scroll), custom @Query with explicit countQuery, and Specification-based dynamic filtering.\n\nImport the companion environment (pagination-demo.postman_environment.json) and set `baseUrl` before running.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:8080", "type": "string" },
+    { "key": "category", "value": "ELECTRONICS", "type": "string" },
+    { "key": "nextCursor", "value": "", "type": "string" }
+  ],
+  "item": [
+    {
+      "name": "0. Health & Docs",
+      "item": [
+        {
+          "name": "Swagger UI (sanity check app is up)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/swagger-ui/index.html",
+              "host": ["{{baseUrl}}"],
+              "path": ["swagger-ui", "index.html"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Swagger UI is reachable (200)', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "OpenAPI JSON spec",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api-docs",
+              "host": ["{{baseUrl}}"],
+              "path": ["api-docs"]
+            }
+          }
+        },
+        {
+          "name": "H2 Console (manual login: jdbc:h2:mem:paginationdb / sa / blank)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/h2-console",
+              "host": ["{{baseUrl}}"],
+              "path": ["h2-console"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "1. Offset Pagination - Page<T>",
+      "item": [
+        {
+          "name": "1.1 Page 0 (shallow, size 20)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "const json = pm.response.json();",
+                  "pm.test('Has totalElements and totalPages', () => {",
+                  "    pm.expect(json).to.have.property('totalElements');",
+                  "    pm.expect(json).to.have.property('totalPages');",
+                  "});",
+                  "pm.test('Content length <= 20', () => {",
+                  "    pm.expect(json.content.length).to.be.at.most(20);",
+                  "});",
+                  "console.log('X-Response-Time-Ms:', pm.response.headers.get('X-Response-Time-Ms'));",
+                  "pm.test('X-Response-Time-Ms header present', () => {",
+                  "    pm.expect(pm.response.headers.has('X-Response-Time-Ms')).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/products/page?category={{category}}&page=0&size=20&sort=price,desc",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "products", "page"],
+              "query": [
+                { "key": "category", "value": "{{category}}" },
+                { "key": "page", "value": "0" },
+                { "key": "size", "value": "20" },
+                { "key": "sort", "value": "price,desc" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "1.2 Page 4000 (deep offset - watch response time climb)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "const ms = pm.response.headers.get('X-Response-Time-Ms');",
+                  "console.log('DEEP OFFSET X-Response-Time-Ms:', ms);",
+                  "pm.environment.set('deepOffsetTimeMs', ms);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/products/page?category={{category}}&page=400&size=20",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "products", "page"],
+              "query": [
+                { "key": "category", "value": "{{category}}" },
+                { "key": "page", "value": "400" },
+                { "key": "size", "value": "20" }
+              ]
+            },
+            "description": "~10k rows per category / size 20 => page 400 is near the tail. Compare X-Response-Time-Ms against 1.1."
+          }
+        },
+        {
+          "name": "1.3 Invalid page size (validation / edge case)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Handles size=0 gracefully (200 or 400 depending on Pageable defaults)', () => {",
+                  "    pm.expect([200, 400]).to.include(pm.response.code);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/products/page?category={{category}}&page=0&size=0",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "products", "page"],
+              "query": [
+                { "key": "category", "value": "{{category}}" },
+                { "key": "page", "value": "0" },
+                { "key": "size", "value": "0" }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "2. Lightweight Pagination - Slice<T>",
+      "item": [
+        {
+          "name": "2.1 Slice page 0 (no totalElements expected)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "const json = pm.response.json();",
+                  "pm.test('No totalElements field (Slice, not Page)', () => {",
+                  "    pm.expect(json).to.not.have.property('totalElements');",
+                  "});",
+                  "pm.test('Has hasNext', () => {",
+                  "    pm.expect(json).to.have.property('hasNext');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/products/slice?category={{category}}&page=0&size=20",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "products", "slice"],
+              "query": [
+                { "key": "category", "value": "{{category}}" },
+                { "key": "page", "value": "0" },
+                { "key": "size", "value": "20" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "2.2 Slice page 1 (next chunk)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/products/slice?category={{category}}&page=1&size=20",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "products", "slice"],
+              "query": [
+                { "key": "category", "value": "{{category}}" },
+                { "key": "page", "value": "1" },
+                { "key": "size", "value": "20" }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "3. Keyset / Scroll Pagination - Window<T>",
+      "item": [
+        {
+          "name": "3.1 Initial scroll (no cursor)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "const json = pm.response.json();",
+                  "pm.test('Has content, hasNext, nextCursor fields', () => {",
+                  "    pm.expect(json).to.have.property('content');",
+                  "    pm.expect(json).to.have.property('hasNext');",
+                  "    pm.expect(json).to.have.property('nextCursor');",
+                  "});",
+                  "if (json.nextCursor) {",
+                  "    pm.collectionVariables.set('nextCursor', json.nextCursor);",
+                  "    console.log('Captured nextCursor for request 3.2:', json.nextCursor);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/products/scroll?category={{category}}&size=20",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "products", "scroll"],
+              "query": [
+                { "key": "category", "value": "{{category}}" },
+                { "key": "size", "value": "20" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "3.2 Next scroll (uses captured cursor)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "const json = pm.response.json();",
+                  "const ms = pm.response.headers.get('X-Response-Time-Ms');",
+                  "console.log('SCROLL (cursor) X-Response-Time-Ms:', ms);",
+                  "if (json.nextCursor) {",
+                  "    pm.collectionVariables.set('nextCursor', json.nextCursor);",
+                  "    console.log('Captured next nextCursor:', json.nextCursor);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/products/scroll?category={{category}}&size=20&cursor={{nextCursor}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "products", "scroll"],
+              "query": [
+                { "key": "category", "value": "{{category}}" },
+                { "key": "size", "value": "20" },
+                { "key": "cursor", "value": "{{nextCursor}}" }
+              ]
+            },
+            "description": "Run 3.1 first (or use Collection Runner for the whole folder in order) so {{nextCursor}} is populated. Re-run this request repeatedly (Postman Runner, 50 iterations) and watch X-Response-Time-Ms stay flat -- that's the whole point of keyset pagination vs 1.2's deep-offset degradation."
+          }
+        },
+        {
+          "name": "3.3 Scroll with empty/garbage cursor (error handling)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Bad cursor returns 400 or 500, not a silent wrong page', () => {",
+                  "    pm.expect([400, 500]).to.include(pm.response.code);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/products/scroll?category={{category}}&size=20&cursor=not-a-valid-base64-cursor",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "products", "scroll"],
+              "query": [
+                { "key": "category", "value": "{{category}}" },
+                { "key": "size", "value": "20" },
+                { "key": "cursor", "value": "not-a-valid-base64-cursor" }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "4. Custom @Query with explicit countQuery",
+      "item": [
+        {
+          "name": "4.1 Price range 10-500, sorted by createdAt asc",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "const json = pm.response.json();",
+                  "pm.test('All returned prices within range', () => {",
+                  "    json.content.forEach(p => {",
+                  "        pm.expect(parseFloat(p.price)).to.be.at.least(10);",
+                  "        pm.expect(parseFloat(p.price)).to.be.at.most(500);",
+                  "    });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/products/query?category={{category}}&minPrice=10&maxPrice=500&page=0&size=10&sort=createdAt,asc",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "products", "query"],
+              "query": [
+                { "key": "category", "value": "{{category}}" },
+                { "key": "minPrice", "value": "10" },
+                { "key": "maxPrice", "value": "500" },
+                { "key": "page", "value": "0" },
+                { "key": "size", "value": "10" },
+                { "key": "sort", "value": "createdAt,asc" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "4.2 Narrow price band (near-empty result set)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/products/query?category={{category}}&minPrice=1999&maxPrice=2000&page=0&size=10",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "products", "query"],
+              "query": [
+                { "key": "category", "value": "{{category}}" },
+                { "key": "minPrice", "value": "1999" },
+                { "key": "maxPrice", "value": "2000" },
+                { "key": "page", "value": "0" },
+                { "key": "size", "value": "10" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "4.3 Missing required minPrice (expect 400)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Missing required param returns 400', () => {",
+                  "    pm.response.to.have.status(400);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/products/query?category={{category}}&maxPrice=500&page=0&size=10",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "products", "query"],
+              "query": [
+                { "key": "category", "value": "{{category}}" },
+                { "key": "maxPrice", "value": "500" },
+                { "key": "page", "value": "0" },
+                { "key": "size", "value": "10" }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "5. Dynamic Filtering - Specification<T>",
+      "item": [
+        {
+          "name": "5.1 Category only",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/products/filter?category={{category}}&page=0&size=10",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "products", "filter"],
+              "query": [
+                { "key": "category", "value": "{{category}}" },
+                { "key": "page", "value": "0" },
+                { "key": "size", "value": "10" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "5.2 Category + price range",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/products/filter?category={{category}}&minPrice=50&maxPrice=300&page=0&size=10",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "products", "filter"],
+              "query": [
+                { "key": "category", "value": "{{category}}" },
+                { "key": "minPrice", "value": "50" },
+                { "key": "maxPrice", "value": "300" },
+                { "key": "page", "value": "0" },
+                { "key": "size", "value": "10" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "5.3 Keyword only (no category)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/products/filter?keyword=Product+#1234&page=0&size=10",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "products", "filter"],
+              "query": [
+                { "key": "keyword", "value": "Product #1234" },
+                { "key": "page", "value": "0" },
+                { "key": "size", "value": "10" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "5.4 All filters combined",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "const json = pm.response.json();",
+                  "pm.test('Every item matches category and price band', () => {",
+                  "    json.content.forEach(p => {",
+                  "        pm.expect(p.category).to.eql(pm.collectionVariables.get('category'));",
+                  "        pm.expect(parseFloat(p.price)).to.be.at.least(10);",
+                  "        pm.expect(parseFloat(p.price)).to.be.at.most(1000);",
+                  "    });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/products/filter?category={{category}}&minPrice=10&maxPrice=1000&keyword=Product&page=0&size=10",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "products", "filter"],
+              "query": [
+                { "key": "category", "value": "{{category}}" },
+                { "key": "minPrice", "value": "10" },
+                { "key": "maxPrice", "value": "1000" },
+                { "key": "keyword", "value": "Product" },
+                { "key": "page", "value": "0" },
+                { "key": "size", "value": "10" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "5.5 No filters at all (full table, paged)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/products/filter?page=0&size=10",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "products", "filter"],
+              "query": [
+                { "key": "page", "value": "0" },
+                { "key": "size", "value": "10" }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
